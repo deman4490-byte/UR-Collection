@@ -29,6 +29,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   const { currencySymbol } = useStoreSettings();
 
   const [isHovered, setIsHovered] = useState(false);
+  const [isImageLoaded, setIsImageLoaded] = useState(false);
   const [selectedSize, setSelectedSize] = useState<string>(product.sizes[0] || 'M');
   const [selectedColor, setSelectedColor] = useState(product.colors[0] || { name: 'Default', hex: '#0B192C' });
   const [justAdded, setJustAdded] = useState(false);
@@ -78,12 +79,20 @@ export const ProductCard: React.FC<ProductCardProps> = ({
         onClick={() => onQuickView(product)}
         className="relative aspect-[3/4] w-full bg-slate-100 dark:bg-slate-800/80 overflow-hidden cursor-pointer"
       >
+        {/* Skeleton Loader Placeholder */}
+        {!isImageLoaded && (
+          <div className="absolute inset-0 animate-pulse bg-slate-200 dark:bg-gray-700 z-0" />
+        )}
+
         {/* Main Product Image */}
         <img
           src={isHovered && product.secondaryImage ? product.secondaryImage : product.image}
           alt={product.title}
           loading="lazy"
-          className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500"
+          onLoad={() => setIsImageLoaded(true)}
+          className={`w-full h-full object-cover object-center group-hover:scale-105 transition-all duration-300 ease-out ${
+            isImageLoaded ? 'opacity-100' : 'opacity-0'
+          }`}
         />
 
         {/* Amazon-style Badges */}

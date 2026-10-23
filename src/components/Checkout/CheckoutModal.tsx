@@ -11,8 +11,12 @@ import {
   Sparkles, 
   Lock, 
   ArrowRight,
-  PackageCheck
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db, auth } from '../../firebase';
+import { useAuth } from '../../context/AuthContext';
 import { useCart } from '../../context/CartContext';
 import { triggerHaptic } from '../../utils/haptics';
 
@@ -28,6 +32,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   onOrderCompleted
 }) => {
   const { cart, totalPrice, clearCart, subtotal, discount, shipping } = useCart();
+  const { user } = useAuth();
 
   const [deliverySpeed, setDeliverySpeed] = useState<'standard' | 'express'>('express');
   const [paymentMethod, setPaymentMethod] = useState<'prime-card' | 'apple-pay' | 'card'>('prime-card');
@@ -38,30 +43,98 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const [isPlacing, setIsPlacing] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const [orderId, setOrderId] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handlePlaceOrder = () => {
+  /**
+   * Handle Confirm Order
+   * 1. Prevents default form submission
+   * 2. Creates order document in Firestore 'orders' collection
+   * 3. Includes userId (auth or 'guest'), items, totalAmount, createdAt, status ("pending")
+   * 4. Clears cart upon successful write and displays "Thank you for your order"
+   */
+  const handlePlaceOrder = async (e?: React.FormEvent) => {
+    if (e) {
+      e.preventDefault();
+    }
+
+    if (cart.length === 0) {
+      setErrorMessage('Your cart is currently empty.');
+      return;
+    }
+
     setIsPlacing(true);
+    setErrorMessage(null);
     triggerHaptic('medium');
 
-    setTimeout(() => {
+    try {
+      // 1. Fetch userId from Firebase Auth, or fallback to 'guest'
+      const userId = user?.uid || auth.currentUser?.uid || 'guest';
+
+      // 2. Map items from cart
+      const orderItems = cart.map((item) => ({
+        id: item.product.id || item.id,
+        title: item.product.title,
+        price: item.product.sellingPrice !== undefined ? item.product.sellingPrice : item.product.price,
+        quantity: item.quantity,
+        image: item.product.image || '',
+        selectedSize: item.selectedSize || 'M',
+        selectedColor: item.selectedColor?.name || 'Default'
+      }));
+
+      // 3. Construct Firestore Order Document
+      const orderDocument = {
+        userId,
+        items: orderItems,
+        totalAmount: parseFloat(totalPrice.toFixed(2)),
+        createdAt: serverTimestamp(),
+        status: 'pending',
+        customerName: guestName.trim() || 'Guest Shopper',
+        customerEmail: user?.email || guestEmail.trim() || 'guest@example.com',
+        shippingAddress: {
+          street: guestAddress,
+          city: 'New York',
+          state: 'NY',
+          zipCode: '10017',
+          country: 'United States'
+        },
+        paymentMethod: paymentMethod === 'prime-card' 
+          ? 'UR Prime Rewards Visa (*** 4242)' 
+          : paymentMethod === 'apple-pay' 
+          ? 'Apple Pay' 
+          : 'Credit Card',
+        deliverySpeed
+      };
+
+      // 4. Save to Firestore 'orders' collection
+      const docRef = await addDoc(collection(db, 'orders'), orderDocument);
+      console.log('Order saved to Firestore with ID:', docRef.id);
+
+      setOrderId(docRef.id);
       setIsPlacing(false);
       setIsSuccess(true);
-      const generatedOrderId = `UR-${Math.floor(100000 + Math.random() * 900000)}`;
-      setOrderId(generatedOrderId);
       triggerHaptic('success');
 
-      // Trigger Confetti Celebration
+      // 5. Trigger Confetti Celebration
       confetti({
-        particleCount: 80,
-        spread: 70,
+        particleCount: 90,
+        spread: 75,
         origin: { y: 0.6 }
       });
 
+      // 6. Automatically clear the user's cart
       clearCart();
-      if (onOrderCompleted) onOrderCompleted();
-    }, 1200);
+
+      if (onOrderCompleted) {
+        onOrderCompleted();
+      }
+    } catch (err: any) {
+      console.error('Error writing order to Firestore:', err);
+      setIsPlacing(false);
+      setErrorMessage(err?.message || 'Failed to place order. Please try again.');
+      triggerHaptic('error');
+    }
   };
 
   return (
@@ -72,7 +145,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={onClose}
+          onClick={() => !isPlacing && onClose()}
           className="fixed inset-0 bg-black/70 backdrop-blur-sm"
         />
 
@@ -89,16 +162,17 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
               <Lock className="w-4 h-4 text-brand-orange" />
               <div>
                 <h3 className="font-extrabold text-base tracking-tight leading-none">
-                  {isSuccess ? 'Guest Order Confirmed' : 'Guest Express Checkout'}
+                  {isSuccess ? 'Order Confirmation' : 'UR Express Checkout'}
                 </h3>
                 <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider">
-                  100% Public • No Account or Login Required
+                  {user ? 'Authenticated Checkout' : '100% Public • Guest Checkout'}
                 </span>
               </div>
             </div>
             <button
-              onClick={onClose}
-              className="p-1.5 rounded-full text-white/80 hover:text-white hover:bg-white/10"
+              onClick={() => !isPlacing && onClose()}
+              disabled={isPlacing}
+              className="p-1.5 rounded-full text-white/80 hover:text-white hover:bg-white/10 disabled:opacity-50"
             >
               <X className="w-5 h-5" />
             </button>
@@ -107,21 +181,21 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
           {/* Modal Body */}
           <div className="p-5 sm:p-6 space-y-5">
             {isSuccess ? (
-              /* Success View */
+              /* Success View - Requirements: Thank you for your order */
               <div className="text-center py-6 space-y-4">
                 <div className="w-20 h-20 mx-auto rounded-full bg-emerald-100 dark:bg-emerald-950/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
                   <CheckCircle2 className="w-12 h-12 stroke-[2.5]" />
                 </div>
 
                 <div className="space-y-1">
-                  <h2 className="text-xl font-black text-slate-900 dark:text-white">
-                    Thank You, {guestName}!
+                  <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white tracking-tight">
+                    Thank you for your order!
                   </h2>
                   <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
-                    Your guest order <span className="font-mono font-bold text-brand-orange">#{orderId}</span> has been confirmed.
+                    Your order <span className="font-mono font-bold text-brand-orange">#{orderId}</span> has been confirmed and saved to Firestore.
                   </p>
-                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-                    Purchased seamlessly as a Guest — no account needed.
+                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                    Cart cleared successfully • Receipt generated
                   </p>
                 </div>
 
@@ -129,38 +203,61 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                   <div className="flex items-center justify-between font-semibold text-slate-700 dark:text-slate-300">
                     <span className="flex items-center space-x-1.5">
                       <Truck className="w-4 h-4 text-brand-orange" />
-                      <span>Estimated Delivery</span>
+                      <span>Delivery Status</span>
                     </span>
-                    <span className="text-brand-orange font-bold">Tomorrow by 11:00 AM</span>
+                    <span className="text-emerald-600 dark:text-emerald-400 font-bold uppercase">
+                      Pending Fulfillment
+                    </span>
                   </div>
                   <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
-                    <span>Shipping To</span>
-                    <span>{guestName} • {guestAddress.slice(0, 30)}...</span>
+                    <span>Customer</span>
+                    <span>{guestName} ({user ? user.email || 'User' : 'Guest'})</span>
                   </div>
                   <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
-                    <span>Receipt Sent To</span>
-                    <span>{guestEmail}</span>
+                    <span>Shipping Address</span>
+                    <span className="truncate max-w-[220px]">{guestAddress}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 border-t border-slate-200 dark:border-slate-700 pt-1.5 font-bold">
+                    <span>Total Amount Paid</span>
+                    <span className="text-brand-orange font-black">${totalPrice.toFixed(2)}</span>
                   </div>
                 </div>
 
                 <button
                   onClick={onClose}
-                  className="w-full py-3.5 rounded-xl bg-brand-orange hover:bg-brand-orange-hover text-brand-navy font-bold text-sm shadow-glow-orange active:scale-95 transition-all"
+                  className="w-full py-3.5 rounded-xl bg-brand-orange hover:bg-brand-orange-hover text-brand-navy font-black text-sm shadow-glow-orange active:scale-95 transition-all"
                 >
-                  Continue Browsing Public Store
+                  Continue Shopping
                 </button>
               </div>
             ) : (
               /* Checkout Form View */
-              <div className="space-y-4">
-                {/* Guest Details & Delivery Address */}
+              <form onSubmit={handlePlaceOrder} className="space-y-4">
+                
+                {/* Error Banner */}
+                {errorMessage && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-xs text-rose-600 dark:text-rose-400 flex items-start space-x-2.5"
+                  >
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <span className="font-bold block">Order Submission Error</span>
+                      <p className="text-[11px] leading-relaxed">{errorMessage}</p>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Customer Details & Delivery Address */}
                 <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 space-y-2">
                   <div className="flex items-center justify-between text-xs font-bold text-slate-900 dark:text-white">
                     <span className="flex items-center space-x-1.5">
                       <MapPin className="w-4 h-4 text-brand-orange" />
-                      <span>Guest Shipping Address</span>
+                      <span>Shipping Address & Contact</span>
                     </span>
                     <button 
+                      type="button"
                       onClick={() => setIsEditingAddress(!isEditingAddress)}
                       className="text-[11px] text-brand-orange hover:underline font-semibold"
                     >
@@ -174,28 +271,28 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                         type="text"
                         value={guestName}
                         onChange={(e) => setGuestName(e.target.value)}
-                        placeholder="Guest Name"
+                        placeholder="Full Name"
                         className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                       />
                       <input
                         type="email"
                         value={guestEmail}
                         onChange={(e) => setGuestEmail(e.target.value)}
-                        placeholder="Guest Email (for receipt)"
+                        placeholder="Email for order confirmation"
                         className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                       />
                       <input
                         type="text"
                         value={guestAddress}
                         onChange={(e) => setGuestAddress(e.target.value)}
-                        placeholder="Shipping Address"
+                        placeholder="Street Address, City, State, ZIP"
                         className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
                       />
                     </div>
                   ) : (
                     <div>
                       <p className="text-xs text-slate-700 dark:text-slate-200 font-semibold">
-                        {guestName} • <span className="font-normal text-slate-500">{guestEmail}</span>
+                        {guestName} • <span className="font-normal text-slate-500">{user?.email || guestEmail}</span>
                       </p>
                       <p className="text-xs text-slate-600 dark:text-slate-400">
                         {guestAddress}
@@ -211,6 +308,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                   </span>
                   <div className="grid grid-cols-2 gap-2">
                     <button
+                      type="button"
                       onClick={() => {
                         triggerHaptic('light');
                         setDeliverySpeed('express');
@@ -234,6 +332,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     </button>
 
                     <button
+                      type="button"
                       onClick={() => {
                         triggerHaptic('light');
                         setDeliverySpeed('standard');
@@ -261,6 +360,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                   </span>
                   <div className="space-y-1.5">
                     <button
+                      type="button"
                       onClick={() => {
                         triggerHaptic('light');
                         setPaymentMethod('prime-card');
@@ -286,6 +386,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     </button>
 
                     <button
+                      type="button"
                       onClick={() => {
                         triggerHaptic('light');
                         setPaymentMethod('apple-pay');
@@ -299,7 +400,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                       <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
                         Apple Pay / Google Pay
                       </span>
-                      <span className="text-[11px] text-slate-400">1-Touch TouchID</span>
+                      <span className="text-[11px] text-slate-400">1-Touch Express</span>
                     </button>
                   </div>
                 </div>
@@ -326,29 +427,29 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                   </div>
                 </div>
 
-                {/* Primary CTA Button */}
+                {/* Primary CTA Button with Loading State */}
                 <button
-                  onClick={handlePlaceOrder}
-                  disabled={isPlacing}
-                  className="w-full py-3.5 rounded-xl bg-brand-orange hover:bg-brand-orange-hover active:bg-brand-orange-active text-brand-navy font-black text-sm flex items-center justify-center space-x-2 shadow-glow-orange active:scale-[0.98] transition-all disabled:opacity-75"
+                  type="submit"
+                  disabled={isPlacing || cart.length === 0}
+                  className="w-full py-3.5 rounded-xl bg-brand-orange hover:bg-brand-orange-hover active:bg-brand-orange-active text-brand-navy font-black text-sm flex items-center justify-center space-x-2 shadow-glow-orange active:scale-[0.98] transition-all disabled:opacity-75 disabled:cursor-not-allowed"
                 >
                   {isPlacing ? (
                     <div className="flex items-center space-x-2">
-                      <div className="w-4 h-4 border-2 border-brand-navy border-t-transparent rounded-full animate-spin" />
-                      <span>Securing Order...</span>
+                      <RefreshCw className="w-4 h-4 animate-spin text-brand-navy" />
+                      <span>Saving Order to Firestore...</span>
                     </div>
                   ) : (
                     <>
                       <Lock className="w-4 h-4 stroke-[2.5]" />
-                      <span>Place Order as Guest • ${totalPrice.toFixed(2)}</span>
+                      <span>Confirm & Place Order • ${totalPrice.toFixed(2)}</span>
                     </>
                   )}
                 </button>
 
                 <p className="text-[10px] text-center text-slate-400">
-                  By placing your order, you agree to UR Collection's terms of service and 30-day money back guarantee.
+                  By confirming, your order will be recorded in Firestore and processed with 30-day money back guarantee.
                 </p>
-              </div>
+              </form>
             )}
           </div>
         </motion.div>
